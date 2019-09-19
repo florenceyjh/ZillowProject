@@ -1,0 +1,447 @@
+```{r message = FALSE, echo = FALSE, error = FALSE}
+# Clear environment of variables and functions
+rm(list = ls(all = TRUE)) 
+# Clear environmet of packages
+if(is.null(sessionInfo()$otherPkgs) == FALSE)lapply(paste("package:", names(sessionInfo()$otherPkgs), sep=""), detach, character.only = TRUE, unload = TRUE)
+```
+
+
+```{r message = FALSE, echo = FALSE, error = FALSE}
+library(tidyverse) 
+library(dplyr) # joins
+library(janitor) # pretty cross-tabs
+library(kableExtra) # pretty html tables
+library(formattable)
+library(gridExtra)
+library(scales)
+library(pastecs)
+library(GGally)
+library(ChannelAttribution)
+library(markovchain) 
+```
+
+```{r message = FALSE, echo = FALSE, error = FALSE}
+# disable scientific notation in R
+options(scipen=999)
+```
+
+```{r}
+# load the data file
+all_acquired <- read.csv('../files/finalData_acquired.csv')
+not_acquired <- read.csv('../files/finalData_notacquired.csv')
+head(all_acquired,20)
+summary(all_acquired)
+```
+
+```{r}
+all_acquired %>%
+  select(LeadChannel_SalesActivity) %>%
+  distinct()
+```
+
+```{r}
+# convert touchTime from factor to date variable
+all_acquired <- all_acquired %>%
+  mutate(touchTime = as.Date(touchTime))%>%
+  mutate(LeadChannel_SalesActivity = case_when(LeadChannel_SalesActivity == "Paid Search – Google" ~ "Paid Search - Google",
+                                               LeadChannel_SalesActivity == "Paid Search – Bing" ~ "Paid Search - Bing", 
+                                               TRUE ~ as.character(LeadChannel_SalesActivity)))
+not_acquired <- not_acquired %>%
+  mutate(touchTime = as.Date(touchTime))%>%
+  mutate(LeadChannel_SalesActivity = case_when(LeadChannel_SalesActivity == "Paid Search – Google" ~ "Paid Search - Google",
+                                               LeadChannel_SalesActivity == "Paid Search – Bing" ~ "Paid Search - Bing", 
+                                               TRUE ~ as.character(LeadChannel_SalesActivity)))
+```
+
+
+```{r}
+all_acquired_agent <-  all_acquired %>% 
+  select(touchNum, REAgentID, TalkTimeMinutes, touchTime, LeadChannel_SalesActivity) %>%
+  mutate(acquired = "1")
+not_acquired <- not_acquired %>%
+  mutate(acquired = "0")
+agents <- union(all_acquired_agent, not_acquired)
+summary(agents)
+str(agents)
+```
+
+### Basic EDA
+
+```{r}
+#Count bargraph 
+count_bargraph <- function(x) {
+  x + geom_bar(position = "dodge") +
+    theme_bw() + 
+    theme(panel.border = element_blank(), 
+                       panel.grid.major = element_blank(),
+                       panel.grid.minor = element_blank()) + 
+    labs(y ="Count") +
+    coord_flip()
+}
+#Count histogram
+count_hist<- function(x){
+  x + geom_histogram(bins = 30)+
+    theme_bw() + 
+    theme(panel.border = element_blank(), 
+                       panel.grid.major = element_blank(),
+                       panel.grid.minor = element_blank()) + 
+    labs(y ="Count") +
+    coord_flip()
+}
+count_bargraph(ggplot(agents, aes(x = LeadChannel_SalesActivity)))
+count_bargraph(ggplot(agents, aes(x = acquired)))
+count_hist(ggplot(agents, aes(x = touchNum)))
+count_hist(ggplot(agents, aes(x = TalkTimeMinutes)))
+```
+
+```{r}
+agents %>%
+  ggplot(aes(x = touchNum, fill =acquired, color = acquired)) +
+  geom_histogram(position = "dodge")
+```
+
+```{r}
+agents %>%
+  ggplot(aes(x = TalkTimeMinutes, fill =acquired, color = acquired)) +
+  geom_density(alpha = .3)+
+  xlim(0, 10)
+```
+
+```{r}
+agents %>%
+  select(LeadChannel_SalesActivity, acquired, REAgentID) %>%
+  group_by(LeadChannel_SalesActivity, acquired) %>%
+  summarise(counts = n_distinct(REAgentID)) %>%
+  ggplot(aes(x = reorder(LeadChannel_SalesActivity, counts), y = counts, fill =acquired, color = acquired)) +
+  geom_bar(position = "dodge", stat = "identity")+
+  coord_flip()
+```
+
+```{r}
+agents %>%
+  select(LeadChannel_SalesActivity, acquired, REAgentID) %>%
+  group_by(LeadChannel_SalesActivity, acquired) %>%
+  summarise(counts = n_distinct(REAgentID)) %>%
+  spread(acquired, counts) %>%
+  summarise(PercentageAcquired = `1` / (`1` + `0`)) %>%
+  arrange(desc(PercentageAcquired)) %>%
+  kable(align = c("c", "c")) %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed", "bordered")) %>% 
+  column_spec(1:2, color = "#000000") 
+```
+
+
+```{r warning=FALSE}
+# aggregating channels to the paths for each customer
+acquired_attr <- all_acquired_agent %>%
+  group_by(REAgentID) %>%
+  summarise(path = paste(LeadChannel_SalesActivity, collapse = '>'),
+            conv = 1,
+            conv_null = 0) %>%
+  ungroup()
+# calculating the models (Markov and heuristics)
+mod1 <- markov_model(acquired_attr,
+                     var_path = 'path',
+                     var_conv = 'conv',
+                     var_null = 'conv_null',
+                     out_more = TRUE)
+h_mod2 <- heuristic_models(acquired_attr, var_path = 'path', var_conv = 'conv')
+h_mod2 %>% 
+  kable(align = c("c", "c", "c", "c")) %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed", "bordered")) %>% 
+  column_spec(1:4, color = "#000000") 
+```
+
+```{r}
+channel_name <- c("Paid Social", "Paid Search - Bing", "Paid Search - Google", "Email", "Organic", "Meetings", "Inbound Phone Calls", "Outbound Phone Calls", "Unknown")
+channel_cost <- c(150, 80, 100, 10, 0, 300, 10, 10, 0)
+channel_lead_cost_df <- data.frame(channel_name, channel_cost)
+  
+npv <- c(7000, 7000, 7000, 8000, 7500, 7000, 7000, 7000, 0)
+npv_channel_df <- data.frame(channel_name, npv)
+```
+
+
+```{r warning=FALSE}
+# Get total cost for all the channels
+all_acquired <- all_acquired %>%
+  left_join(channel_lead_cost_df, by = c("LeadChannel_SalesActivity" = "channel_name"))
+# Join table with npv to get revenue
+all_acquired <- all_acquired %>%
+  left_join(npv_channel_df, by = c("LeadChannel_SalesActivity" = "channel_name")) 
+```
+
+
+```{r warning=FALSE}
+# Since we have not earned any revenue yet, we need only the cost from this dataset to calculate ROI
+not_acquired <- not_acquired %>%
+  left_join(channel_lead_cost_df, by = c("LeadChannel_SalesActivity" = "channel_name"))
+not_acquired_channels_cost <- not_acquired %>%
+  select(Channel = LeadChannel_SalesActivity, channel_cost) %>%
+  group_by(Channel) %>%
+  summarise(revenue = 0, cost = sum(channel_cost))  
+```
+
+### Function to merge the two datasets for acquired and not acquired agents to get total cost and revenue
+
+```{r, warning= FALSE, message= FALSE }
+getTotalCostRevenue <- function(acquired_channels_revenue_cost, not_acquired_channels_cost) 
+{
+  final_df <- rbind(acquired_channels_revenue_cost, not_acquired_channels_cost)
+  
+  final_df <- final_df %>%
+    group_by(Channel) %>%
+    summarise(revenue = sum(revenue), cost = sum(cost))  
+  
+  # ROI = (Net Profit / Cost of Investment) x 100.
+  final_df <- final_df %>%
+    mutate(ROI = (revenue)*100/if_else(cost == 0, revenue, cost))
+  
+  final_df <- final_df %>%
+    select(Channel, ROI) %>%
+    arrange(desc(ROI)) 
+  
+  return (final_df)
+}
+```
+
+
+
+### First Touch
+
+```{r}
+all_acquired_ft <- all_acquired %>%
+  mutate(percent_weight = case_when(touchNum == 1 ~ 100,
+                            TRUE ~ 0))
+```
+
+
+
+```{r}
+# Get revenue and cost by channel
+acquired_channels_revenue_cost_ft <- all_acquired_ft %>%
+  mutate(lead_revenue = percent_weight*npv/10000) %>%
+  select(Channel = LeadChannel_SalesActivity, lead_revenue, channel_cost) %>%
+  group_by(Channel) %>%
+  summarise(revenue = sum(lead_revenue), cost = sum(channel_cost))
+```
+
+
+```{r}
+final_ft <- getTotalCostRevenue(acquired_channels_revenue_cost_ft, not_acquired_channels_cost) 
+final_ft %>% 
+    kable(align = c("c", "c", "c")) %>% 
+    kable_styling(bootstrap_options = c("striped", "condensed", "bordered")) %>% 
+    column_spec(1:2, color = "#000000") %>%
+    add_header_above(c( "First Touch - ROI" = 2))
+```
+
+```{r}
+#Graphs 
+basic_theme <- 
+  theme(legend.position = "none") +
+  theme(plot.title = element_text(size=16, face="bold", hjust=0, color="#000000")) +
+  theme(axis.title = element_text(size=10, face="bold", color="#000000")) +
+  theme(axis.title.y = element_text(angle=90)) +
+  theme(axis.title.x = element_text(hjust = .5)) +
+  theme_minimal() +
+  theme(axis.line = element_line(color = "#000000"),
+        axis.ticks = element_line(color = "#000000"),
+        axis.text = element_text(color = "#000000")) +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+
+```{r}
+#First Touch graph
+FirstTouchROIGraph <- 
+  final_ft %>%
+  filter(Channel != "Unknown") %>%
+  ggplot(aes(x = reorder(Channel, ROI), y = ROI)) +
+  geom_bar(position = "dodge", stat = "identity", fill = "#F25F09")+
+  coord_flip() +
+  basic_theme +
+  xlab("")+
+  ylab("") +
+  ggtitle("First Touch ROI") + 
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+  
+FirstTouchROIGraph
+```
+
+
+### Last Touch
+
+```{r}
+all_acquired_lt_touch <- all_acquired %>%
+  select(REAgentID, touchNum) %>%
+  group_by(REAgentID) %>%
+  top_n(1) %>%
+  mutate(percent_weight=100)
+all_acquired_lt <- all_acquired %>%
+  left_join(all_acquired_lt_touch, by=c("REAgentID", "touchNum")) %>%
+  mutate(percent_weight = if_else(is.na(percent_weight), 0, 100))
+```
+
+
+```{r}
+# Get revenue and cost by channel
+acquired_channels_revenue_cost_lt <- all_acquired_lt %>%
+  mutate(lead_revenue = percent_weight*npv/10000) %>%
+  select(Channel = LeadChannel_SalesActivity, lead_revenue, channel_cost) %>%
+  group_by(Channel) %>%
+  summarise(revenue = sum(lead_revenue), cost = sum(channel_cost))
+```
+
+
+```{r}
+final_lt <- getTotalCostRevenue(acquired_channels_revenue_cost_lt, not_acquired_channels_cost) 
+final_lt %>% 
+    kable(align = c("c", "c", "c")) %>% 
+    kable_styling(bootstrap_options = c("striped", "condensed", "bordered")) %>% 
+    column_spec(1:2, color = "#000000") %>%
+    add_header_above(c( "Last Touch - ROI" = 2))
+```
+
+```{r}
+#Last Touch graph
+LastTouchROIGraph <- 
+  final_lt %>%
+  filter(Channel != "Unknown") %>%
+  ggplot(aes(x = reorder(Channel, ROI), y = ROI)) +
+  geom_bar(position = "dodge", stat = "identity", fill = "#F25F09")+
+  coord_flip() +
+  basic_theme +
+  xlab("")+
+  ylab("") +
+  ggtitle("Last Touch ROI") + 
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+  
+LastTouchROIGraph
+```
+
+
+
+
+
+### Linear Touch
+
+```{r}
+all_acquired_linear_touch <- all_acquired %>%
+  select(REAgentID, touchNum) %>%
+  group_by(REAgentID) %>%
+  summarize(touchpoints = max(touchNum)) %>%
+  mutate(percent_weight = 100/touchpoints)
+all_acquired_linear <- all_acquired %>%
+  left_join(all_acquired_linear_touch, by=c("REAgentID"))
+```
+
+
+```{r}
+# Get revenue and cost by channel
+acquired_channels_revenue_cost_linear <- all_acquired_linear %>%
+  mutate(lead_revenue = percent_weight*npv/10000) %>%
+  select(Channel = LeadChannel_SalesActivity, lead_revenue, channel_cost) %>%
+  group_by(Channel) %>%
+  summarise(revenue = sum(lead_revenue), cost = sum(channel_cost))
+```
+
+
+```{r}
+final_linear <- getTotalCostRevenue(acquired_channels_revenue_cost_linear, not_acquired_channels_cost)
+final_linear %>% 
+    kable(align = c("c", "c", "c")) %>% 
+    kable_styling(bootstrap_options = c("striped", "condensed", "bordered")) %>% 
+    column_spec(1:2, color = "#000000") %>% 
+    add_header_above(c( "Linear Touch - ROI" = 2))
+```
+
+
+```{r}
+#Linear Touch graph
+LinearTouchROIGraph <- 
+  final_linear %>%
+  filter(Channel != "Unknown") %>%
+  ggplot(aes(x = reorder(Channel, ROI), y = ROI)) +
+  geom_bar(position = "dodge", stat = "identity", fill = "#F25F09")+
+  coord_flip() +
+  basic_theme +
+  xlab("")+
+  ylab("") +
+  ggtitle("Linear Touch ROI") + 
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+  
+LinearTouchROIGraph
+```
+
+
+
+### Time Decay
+
+```{r}
+# compare Acquisition Date and Touch Date to get days from acquisition
+# convert touchTime from factor to date variable
+all_acquired_td <- all_acquired %>%
+  mutate(AcquisitionDate = as.Date(AcquisitionDate)) %>%
+  mutate(Days_to_acquisition = as.numeric(AcquisitionDate  - touchTime))
+# By default, the time decay attribution model has a half life of 7 days. It means that the interaction which happened 7 days prior to conversion gets half the credit of interaction that occurred on the day of conversion.
+# Value formula -> N(t) = N(0)(1/2)^(t/t1/2) = N(0)* 2^-(t/t1/2)
+# Here N(0) = 100%
+# t1/2 = 7
+# t = Days_to_acquisition
+half_life <- 7
+all_acquired_td <- all_acquired_td %>%
+  mutate(decay_weight = 100 * (2 ^ (-1*Days_to_acquisition/half_life)))
+# Get total decay weight to get a ratio of decay_weight/total_weight as percent_weight
+all_acquired_total_weight_td <- all_acquired_td %>%
+  select(c(REAgentID, decay_weight)) %>%
+  group_by(REAgentID) %>%
+  summarise(Total_weight = sum(decay_weight))
+# Joining the two dataframes
+all_acquired_td <-  all_acquired_td %>%
+  left_join(all_acquired_total_weight_td, by="REAgentID")
+all_acquired_td <- all_acquired_td %>%
+  mutate(percent_weight = decay_weight*100/Total_weight)
+```
+
+
+```{r}
+# Get revenue and cost by channel
+acquired_channels_revenue_cost_td <- all_acquired_td %>%
+  mutate(lead_revenue = percent_weight*npv/10000) %>%
+  select(Channel = LeadChannel_SalesActivity, lead_revenue, channel_cost) %>%
+  group_by(Channel) %>%
+  summarise(revenue = sum(lead_revenue), cost = sum(channel_cost))
+```
+
+
+```{r}
+final_td <- getTotalCostRevenue(acquired_channels_revenue_cost_td, not_acquired_channels_cost) 
+final_td %>% 
+    kable(align = c("c", "c", "c")) %>% 
+    kable_styling(bootstrap_options = c("striped", "condensed", "bordered")) %>% 
+    column_spec(1:2, color = "#000000") %>% 
+    add_header_above(c( "Time Decay - ROI" = 2))
+```
+
+```{r}
+#Time Decay graph
+TimeDecayROIGraph <- 
+  final_td %>%
+  filter(Channel != "Unknown") %>%
+  ggplot(aes(x = reorder(Channel, ROI), y = ROI)) +
+  geom_bar(position = "dodge", stat = "identity", fill = "#F25F09")+
+  coord_flip() +
+  basic_theme +
+  xlab("")+
+  ylab("") +
+  ggtitle("Time Decay ROI") + 
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+  
+TimeDecayROIGraph
+```
