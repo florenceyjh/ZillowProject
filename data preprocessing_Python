@@ -1,0 +1,219 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import stats
+
+################################
+# Import,Combine,Clean the Data#
+################################
+# import the dataset
+
+def importData():
+    df_aad = pd.read_csv("AgentAcquisitionDates.csv")
+    df_zuid = pd.read_csv("AgentIDZUIDLookup.csv")
+    df_lead = pd.read_csv("AgentLeads.csv")
+    df_pc1 = pd.read_csv("PhoneCalls20161001_20170228.csv")
+    df_pc2 = pd.read_csv("PhoneCalls20170301_20170630.csv")
+    df_pc = pd.concat([df_pc1, df_pc2])
+    df_sm = pd.read_csv("SalesMeetings.csv")
+    df_zuid_acquireTime = pd.merge(df_zuid, df_aad, how="outer", left_on="ZUID", right_on="ZUID")
+    df_lead = df_lead.astype(
+        {"REAgentID": 'category', "SalesRepID": 'category', "LeadPlatform": 'category', "LeadType": 'category',
+         "LeadVendor": 'category'})
+    df_lead['LeadDateTime'] = pd.to_datetime(df_lead['LeadDateTime'], format='%Y-%m-%d %H:%M:%S')
+    df_pc = df_pc.astype(
+        {"REAgentID": 'category', "SalesRepID": 'category', "PhoneCallType": 'category', "TalkTimeMinutes": 'float64'})
+    df_pc['PhoneCallDateTime'] = pd.to_datetime(df_pc['PhoneCallDateTime'], format='%Y-%m-%d %H:%M:%S')
+    df_sm = df_sm.astype({"REAgentID": 'category', "SalesRepID": 'category'})
+    df_sm['SalesMeetingDate'] = pd.to_datetime(df_sm['SalesMeetingDate'], format='%Y-%m-%d %H:%M:%S')
+    df_zuid_acquireTime = df_zuid_acquireTime.astype({"REAgentID": 'category', "ZUID": 'category'})
+    df_zuid_acquireTime['AcquisitionDate'] = pd.to_datetime(df_zuid_acquireTime['AcquisitionDate'],
+                                                            format='%Y-%m-%d %H:%M:%S')
+    return df_zuid_acquireTime, df_lead, df_pc, df_sm
+
+df_zuid_acquireTime, df_lead, df_pc, df_sm = importData()
+
+df_pc.count()
+df_sm.count()
+df_lead.count()
+
+df_pc.REAgentID.nunique()
+df_lead.REAgentID.nunique()
+df_sm.REAgentID.nunique()
+
+df_lead.LeadDateTime.min()
+df_lead.LeadDateTime.max()
+
+df_pc.PhoneCallDateTime.min()
+df_pc.PhoneCallDateTime.max()
+
+df_sm.SalesMeetingDate.max()
+
+
+df_zuid_acquireTime.AcquisitionDate.min()
+df_zuid_acquireTime.AcquisitionDate.max()
+
+df_zuid_acquireTime.count()
+df_zuid_acquireTime.REAgentID.nunique()
+df_zuid_acquireTime.ZUID.nunique()
+
+
+
+# Data Cleaning
+# The REAgentID cannot be null. Remove the rows where REAgentID is null.
+df_zuid_acquireTime = df_zuid_acquireTime.dropna(subset=['REAgentID'])
+df_lead = df_lead.dropna(subset=['REAgentID'])
+df_sm = df_sm.dropna(subset=['REAgentID'])
+df_pc = df_pc.dropna(subset=['REAgentID'])
+# df_pc : phone call talk time cannot be zero. Remove rows where phone call talk time is zero.
+df_pc = df_pc[df_pc.TalkTimeMinutes != 0]
+
+# check duplicates
+# df_zuid_acquireTime[df_zuid_acquireTime['ZUID'].duplicated()] # five duplicates
+# df_zuid_acquireTime[df_zuid_acquireTime.ZUID  == 44444653]
+# df_zuid_acquireTime[df_zuid_acquireTime.ZUID  == 26298053]
+# df_zuid_acquireTime[df_zuid_acquireTime.ZUID  == 60050538]
+# df_zuid_acquireTime[df_zuid_acquireTime.ZUID  == 59432563]
+# df_zuid_acquireTime[df_zuid_acquireTime.ZUID  == 18773639]
+# df_zuid_acquireTime[df_zuid_acquireTime['REAgentID'].duplicated()] # zero duplicates
+
+# create set to collect IDs of acquired REAgents
+set_acuqiredREAgentID = set(df_zuid_acquireTime['REAgentID']) # length : 518471
+
+# create set to collect IDs of all REAgents
+def createSets():
+    S_al = set(df_lead['REAgentID'])
+    S_pc = set(df_pc['REAgentID'])
+    S_sm = set(df_sm['REAgentID'])
+    set_all = S_al | S_pc | S_sm
+    return set_all
+
+set_all = createSets()  # length : 505109
+set_all_acquired = set_all & set_acuqiredREAgentID  # length : 407276
+# set_all_notacquired = set_all - set_acuqiredREAgentID  # length : 97833
+
+# combine data set of phone call, sales meeting, and agent leads
+def combineChannelData():
+    df_sm_al = df_lead.append(df_sm, sort=False)
+    df_all = df_sm_al.append(df_pc, sort=False)
+    return df_all
+df_all_raw = combineChannelData()
+
+
+# convert df_all by creating touchTime and remove three other date and time
+def tidyAllData():
+    df_all_1 = df_all_raw
+    df_all_1['touchTime'] = np.nan
+    df_all_1['LeadChannel_SalesActivity'] = np.nan
+    df_all_1['touchTime'] = pd.to_datetime(df_all_1['touchTime'], format='%Y-%m-%d %H:%M:%S')
+    df_all_1['touchTime'] = df_all_1['touchTime'].fillna(df_all_1['LeadDateTime'])
+    df_all_1['touchTime'] = df_all_1['touchTime'].fillna(df_all_1['SalesMeetingDate'])
+    df_all_1['touchTime'] = df_all_1['touchTime'].fillna(df_all_1['PhoneCallDateTime'])
+    df_all_1.loc[df_all_1.SalesMeetingDate.notnull(), 'LeadChannel_SalesActivity'] = "Meetings"
+    df_all_1 = df_all_1.drop(['LeadDateTime', 'SalesMeetingDate', 'PhoneCallDateTime'], axis=1)
+    df_all_1.loc[df_all_1.LeadType == "Email", 'LeadChannel_SalesActivity'] = "Email"
+    df_all_1.loc[df_all_1.LeadType == "Organic", 'LeadChannel_SalesActivity'] = "Organic"
+    df_all_1.loc[df_all_1.LeadType == "Social Organic", 'LeadChannel_SalesActivity'] = "Organic"
+    df_all_1.loc[df_all_1.LeadVendor == "Google Search", 'LeadChannel_SalesActivity'] = "Paid Search – Google"
+    df_all_1.loc[df_all_1.LeadVendor == "Bing Search", 'LeadChannel_SalesActivity'] = "Paid Search – Bing"
+    df_all_1.loc[df_all_1.PhoneCallType == "Sales Rep Called RE Agent", 'LeadChannel_SalesActivity'] = "Outbound Phone Calls"
+    df_all_1.loc[df_all_1.PhoneCallType == "RE Agent Called Sales Rep", 'LeadChannel_SalesActivity'] = "Inbound Phone Calls"
+    df_all_1["middle"] = df_all_1["LeadType"].astype(str) + df_all_1["LeadVendor"].astype(str) + df_all_1["PhoneCallType"].astype(str) + df_all_1["LeadChannel_SalesActivity"].astype(str)
+    df_all_1.loc[df_all_1.middle == "nannannannan", 'LeadChannel_SalesActivity'] = "Unknown"
+    df_all_1['LeadChannel_SalesActivity'] = df_all_1['LeadChannel_SalesActivity'].fillna("Paid Social")
+    df_all_1 = df_all_1.drop(columns=['middle','LeadPlatform','LeadType','LeadVendor','PhoneCallType'])
+    return df_all_1
+df_all = tidyAllData()
+
+df_all_acquired = df_all[df_all['REAgentID'].isin(set_acuqiredREAgentID)]
+df_all_notacquired = df_all[~df_all['REAgentID'].isin(set_acuqiredREAgentID)]
+
+################################
+# Data Analysis                #
+################################
+
+# import the data
+def importData2():
+    df_all_acquired_withRank = pd.read_csv("df_all_acquired_withRank.csv")
+    df_all_notacquired_withRank = pd.read_csv("df_all_notacquired_withRank.csv")
+    df_all_acquired_withRank = df_all_acquired_withRank.astype(
+        {"touchNum": 'category',"REAgentID": 'category', "SalesRepID": 'category',  "LeadChannel_SalesActivity": 'category'})
+    df_all_acquired_withRank['touchTime'] = pd.to_datetime(df_all_acquired_withRank['touchTime'], format='%Y-%m-%d %H:%M:%S')
+    df_all_notacquired_withRank = df_all_notacquired_withRank.astype(
+        {"touchNum": 'category',"REAgentID": 'category', "SalesRepID": 'category',  "LeadChannel_SalesActivity": 'category'})
+    df_all_notacquired_withRank['touchTime'] = pd.to_datetime(df_all_notacquired_withRank['touchTime'], format='%Y-%m-%d %H:%M:%S')
+    return df_all_acquired_withRank,df_all_notacquired_withRank
+
+df_all_acquired_withRank, df_all_notacquired_withRank = importData2()
+
+# Detect and remove outliers
+# Question 1: how many times had people been touched before being acquired or not acquired?
+df_all_acquired_withRank.groupby("REAgentID").touchNum.count().describe()
+df_all_notacquired_withRank.groupby("REAgentID").touchNum.count().describe()
+
+# Remove outliers
+def remove_outlier(df_in):
+    a = df_in.groupby("REAgentID").count().LeadChannel_SalesActivity.reset_index()
+    q1 = a["LeadChannel_SalesActivity"].quantile(0.25)
+    q3 = a["LeadChannel_SalesActivity"].quantile(0.75)
+    iqr = q3 - q1  # Interquartile range
+    fence_low = q1 - 1.5 * iqr
+    fence_high = q3 + 1.5 * iqr
+    aset = set(a.loc[(a["LeadChannel_SalesActivity"] > fence_low) & (a["LeadChannel_SalesActivity"] < fence_high)].REAgentID)
+    df_out = df_in[df_in['REAgentID'].isin(aset)]
+    return df_out
+
+df_all_acquired_withRank_noOutliers = remove_outlier(df_all_acquired_withRank)
+df_all_notacquired_withRank_noOutliers = remove_outlier(df_all_notacquired_withRank)
+
+df_all_acquired_withRank_noOutliers.groupby("REAgentID").touchNum.count().describe()
+df_all_notacquired_withRank_noOutliers.groupby("REAgentID").touchNum.count().describe()
+
+df_all_acquired_withRank_noOutliers.to_csv("df_all_acquired_withRank_noOutliers.csv", index=False)
+df_all_notacquired_withRank_noOutliers.to_csv("df_all_notacquired_withRank_noOutliers.csv", index=False)
+
+# Join the Acquired Date and Remove the SaleRepID
+def addAcquiredDataRmSalesRepID(df1,df2):
+    df1 = df1.drop(columns=['SalesRepID'])
+    df1 = pd.merge(df1,df2,how="left",on=["REAgentID"])
+    df1 = df1.drop(columns=['ZUID'])
+    return df1
+
+df_all_acquired_withRank_noOutliers_withAcquireDate = addAcquiredDataRmSalesRepID(df_all_acquired_withRank_noOutliers,df_zuid_acquireTime)
+
+
+
+df_all_acquired_withRank_noOutliers.shape
+df_all_acquired_withRank_noOutliers_withAcquireDate.shape
+
+df_all_acquired_withRank_noOutliers_withAcquireDate.to_csv("df_all_acquired_withRank_noOutliers_withAcquireDate.csv", index=False)
+df_all_acquired_withRank_noOutliers_withAcquireDate.AcquisitionDate.unique()
+
+
+df_all_acquired_withRank_noOutliers_withAcquireDate["AcquisitionDate_Adj"] = df_all_acquired_withRank_noOutliers_withAcquireDate["AcquisitionDate"].dt.date
+df_all_acquired_withRank_noOutliers_withAcquireDate["touchTime_Adj"] = df_all_acquired_withRank_noOutliers_withAcquireDate["touchTime"].dt.date
+df_all_acquired_withRank_noOutliers_withAcquireDate["Gap"] = df_all_acquired_withRank_noOutliers_withAcquireDate["AcquisitionDate_Adj"] - df_all_acquired_withRank_noOutliers_withAcquireDate["touchTime_Adj"]
+
+df_all_acquired_withRank_noOutliers_withAcquireDate["Gap"] = df_all_acquired_withRank_noOutliers_withAcquireDate["Gap"].dt.days
+
+
+UsualCase = df_all_acquired_withRank_noOutliers_withAcquireDate[df_all_acquired_withRank_noOutliers_withAcquireDate["Gap"] >=0]
+UsualCaseSet = set(UsualCase["REAgentID"])
+
+df_all_acquired_withRank_noOutliers_withAcquireDate_rmunusualCase = df_all_acquired_withRank_noOutliers_withAcquireDate[df_all_acquired_withRank_noOutliers_withAcquireDate['REAgentID'].isin(UsualCaseSet)]
+
+finalData = df_all_acquired_withRank_noOutliers_withAcquireDate_rmunusualCase[df_all_acquired_withRank_noOutliers_withAcquireDate_rmunusualCase["Gap"]>=0]
+
+finalData.shape
+finalData.REAgentID.nunique()
+finalData.to_csv("finalData_acquired.csv",index=False)
+
+df_all_acquired_withRank_noOutliers_withAcquireDate_rmunusualCase.shape
+df_all_acquired_withRank_noOutliers_withAcquireDate.shape
+
+
+
+df_all_notacquired_withRank_noOutliers = df_all_notacquired_withRank_noOutliers.drop(columns=['SalesRepID'])
+
+df_all_notacquired_withRank_noOutliers.to_csv("finalData_notacquired.csv",index=False)
+df_all_notacquired_withRank_noOutliers.REAgentID.nunique()
